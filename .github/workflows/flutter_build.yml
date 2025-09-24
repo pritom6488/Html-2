@@ -1,0 +1,283 @@
+// ========================= // Project: playit_clone_flutter // Files included below: pubspec.yaml  AND  lib/main.dart // Copy pubspec.yaml to your project root and lib/main.dart to lib/main.dart // Then run: flutter pub get && flutter run // =========================
+
+/* ---------- pubspec.yaml ---------- */
+
+name: playit_clone_flutter description: A PlayIt-like video player (playlist, subtitles, gestures, double-tap skip) publish_to: 'none' version: 1.0.0+1 environment: sdk: '>=2.18.0 <3.0.0'
+
+dependencies: flutter: sdk: flutter chewie: ^1.8.1 video_player: ^2.9.2 subtitle_wrapper_package: ^2.3.0 file_picker: ^5.2.7 wakelock: ^0.6.2 path_provider: ^2.0.15
+
+optional: add these if you want system brightness / volume control
+
+screen_brightness: ^0.0.6
+
+volume_controller: ^1.0.2
+
+flutter: uses-material-design: true assets: - assets/
+
+/* ---------- lib/main.dart ---------- */
+
+import 'dart:io'; import 'package:flutter/material.dart'; import 'package:video_player/video_player.dart'; import 'package:chewie/chewie.dart'; import 'package:subtitle_wrapper_package/subtitle_controller.dart'; import 'package:subtitle_wrapper_package/subtitle_wrapper.dart'; import 'package:file_picker/file_picker.dart'; import 'package:wakelock/wakelock.dart';
+
+void main() { runApp(const MyApp()); }
+
+class MyApp extends StatelessWidget { const MyApp({super.key});
+
+@override Widget build(BuildContext context) { return MaterialApp( debugShowCheckedModeBanner: false, title: 'PlayIt Clone', theme: ThemeData.dark().copyWith( scaffoldBackgroundColor: Colors.black, appBarTheme: const AppBarTheme(color: Colors.black87), ), home: const HomeScreen(), ); } }
+
+class HomeScreen extends StatefulWidget { const HomeScreen({super.key});
+
+@override State<HomeScreen> createState() => _HomeScreenState(); }
+
+class _HomeScreenState extends State<HomeScreen> { final List<PlaylistItem> _playlist = [];
+
+@override void dispose() { for (var item in _playlist) { item.dispose(); } super.dispose(); }
+
+Future<void> _pickVideo() async { FilePickerResult? res = await FilePicker.platform.pickFiles( type: FileType.video, allowMultiple: false, ); if (res != null && res.files.isNotEmpty) { final path = res.files.single.path!; final title = res.files.single.name; setState(() { final item = PlaylistItem(title: title, url: path, isLocal: true); _playlist.add(item); }); } }
+
+Future<void> addNetworkVideoDialog() async { final controller = TextEditingController(); final titleCtrl = TextEditingController(); await showDialog( context: context, builder: () => AlertDialog( title: const Text('Add network video URL'), content: Column( mainAxisSize: MainAxisSize.min, children: [ TextField( controller: titleCtrl, decoration: const InputDecoration(labelText: 'Title (optional)'), ), TextField( controller: controller, decoration: const InputDecoration(labelText: 'Video URL'), ), ], ), actions: [ TextButton( onPressed: () => Navigator.pop(context), child: const Text('Cancel'), ), ElevatedButton( onPressed: () { final url = controller.text.trim(); if (url.isNotEmpty) { setState(() { _playlist.add(PlaylistItem( title: titleCtrl.text.isEmpty ? url.split('/').last : titleCtrl.text, url: url, isLocal: false, )); }); Navigator.pop(context); } }, child: const Text('Add'), ) ], ), ); }
+
+void openPlayer(PlaylistItem item) { Navigator.push( context, MaterialPageRoute(builder: () => PlayerScreen(item: item, playlist: _playlist)), ); }
+
+@override Widget build(BuildContext context) { return Scaffold( appBar: AppBar( title: const Text('PlayIt Clone'), actions: [ IconButton(onPressed: _addNetworkVideoDialog, icon: const Icon(Icons.link)), IconButton(onPressed: _pickVideo, icon: const Icon(Icons.file_upload)), ], ), body: _playlist.isEmpty ? Center( child: Column( mainAxisSize: MainAxisSize.min, children: [ const Icon(Icons.play_circle_outline, size: 90, color: Colors.white24), const SizedBox(height: 12), const Text('No videos in playlist', style: TextStyle(color: Colors.white54)), const SizedBox(height: 12), ElevatedButton.icon( onPressed: _pickVideo, icon: const Icon(Icons.add), label: const Text('Pick local video'), ), ], ), ) : ListView.separated( padding: const EdgeInsets.all(8), itemCount: playlist.length, separatorBuilder: (, __) => const Divider(color: Colors.white12), itemBuilder: (context, idx) { final p = _playlist[idx]; return ListTile( tileColor: Colors.white10, leading: const Icon(Icons.movie, color: Colors.white70), title: Text(p.title, style: const TextStyle(color: Colors.white)), subtitle: Text(p.isLocal ? 'Local file' : p.url, style: const TextStyle(color: Colors.white54, fontSize: 12)), trailing: IconButton( icon: const Icon(Icons.play_arrow), onPressed: () => _openPlayer(p), ), onTap: () => _openPlayer(p), ); }, ), ); } }
+
+class PlaylistItem { final String title; final String url; // local path or network URL final bool isLocal;
+
+VideoPlayerController? controller; ChewieController? chewieController;
+
+PlaylistItem({required this.title, required this.url, required this.isLocal});
+
+void dispose() { controller?.dispose(); chewieController?.dispose(); } }
+
+class PlayerScreen extends StatefulWidget { final PlaylistItem item; final List<PlaylistItem> playlist;
+
+const PlayerScreen({super.key, required this.item, required this.playlist});
+
+@override State<PlayerScreen> createState() => _PlayerScreenState(); }
+
+class _PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderStateMixin { late PlaylistItem current; SubtitleController? _subtitleController;
+
+// UI state bool _showControls = true; double _gestureVolume = 0.5; double _gestureBrightness = 0.5; // simulated bool _isBuffering = true;
+
+// For double-tap skip animation late AnimationController _animCtrl; String _skipText = ''; Offset _tapPosition = Offset.zero;
+
+@override void initState() { super.initState(); current = widget.item; _animCtrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 700)); _initPlayer(); Wakelock.enable(); }
+
+Future<void> _initPlayer({String? subtitlePath}) async { // Dispose previous controllers if any current.controller?.dispose(); current.chewieController?.dispose();
+
+if (current.isLocal) {
+  current.controller = VideoPlayerController.file(File(current.url));
+} else {
+  current.controller = VideoPlayerController.network(current.url);
+}
+
+await current.controller!.initialize();
+
+current.chewieController = ChewieController(
+  videoPlayerController: current.controller!,
+  autoPlay: true,
+  looping: false,
+  allowMuting: true,
+  materialProgressColors: ChewieProgressColors(playedColor: Colors.redAccent, handleColor: Colors.white, backgroundColor: Colors.white24),
+);
+
+// Subtitle
+if (subtitlePath != null) {
+  _subtitleController = SubtitleController(subtitleUrl: subtitlePath, subtitleType: SubtitleType.srt);
+} else {
+  // empty controller (no subtitles)
+  _subtitleController = null;
+}
+
+setState(() {
+  _isBuffering = false;
+});
+
+}
+
+@override void dispose() { _animCtrl.dispose(); current.dispose(); Wakelock.disable(); super.dispose(); }
+
+void _togglePlay() { if (current.controller == null) return; setState(() { if (current.controller!.value.isPlaying) { current.controller!.pause(); } else { current.controller!.play(); } }); }
+
+void _onTapScreen() { setState(() { _showControls = !_showControls; }); }
+
+void _onDoubleTapLeft() { _seekRelative(-10); _showSkipOverlay('-10s'); }
+
+void _onDoubleTapRight() { _seekRelative(10); _showSkipOverlay('+10s'); }
+
+void _seekRelative(int seconds) { final pos = current.controller!.value.position; final dur = current.controller!.value.duration; var np = pos + Duration(seconds: seconds); if (np < Duration.zero) np = Duration.zero; if (np > dur) np = dur; current.controller!.seekTo(np); }
+
+void _showSkipOverlay(String text) { setState(() { _skipText = text; }); animCtrl.forward(from: 0).then(() { Future.delayed(const Duration(milliseconds: 300), () { if (mounted) setState(() => _skipText = ''); }); }); }
+
+void _onVerticalDragUpdate(DragUpdateDetails details, BuildContext context) { final size = MediaQuery.of(context).size; final isLeft = details.globalPosition.dx < size.width / 2; final delta = -details.delta.dy / size.height; // normalized if (isLeft) { // brightness simulated setState(() { _gestureBrightness = (_gestureBrightness + delta).clamp(0.0, 1.0); }); } else { // volume change -- affects player volume setState(() { _gestureVolume = (_gestureVolume + delta).clamp(0.0, 1.0); current.controller?.setVolume(_gestureVolume); }); } }
+
+void _pickSubtitle() async { FilePickerResult? res = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['srt', 'vtt']); if (res != null && res.files.single.path != null) { final path = res.files.single.path!; // re-init player with subtitle setState(() { _isBuffering = true; }); await _initPlayer(subtitlePath: path); } }
+
+Widget _buildControls(BuildContext context) { final controller = current.controller; if (controller == null) return const SizedBox.shrink();
+
+final pos = controller.value.position;
+final dur = controller.value.duration;
+
+return Positioned(
+  left: 0,
+  right: 0,
+  bottom: 0,
+  child: AnimatedOpacity(
+    opacity: _showControls ? 1 : 0,
+    duration: const Duration(milliseconds: 200),
+    child: Container(
+      color: Colors.black45,
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              IconButton(
+                icon: Icon(controller.value.isPlaying ? Icons.pause : Icons.play_arrow, size: 28),
+                onPressed: _togglePlay,
+              ),
+              Text(_formatDuration(pos), style: const TextStyle(color: Colors.white70)),
+              Expanded(
+                child: Slider(
+                  value: pos.inMilliseconds.toDouble().clamp(0.0, dur.inMilliseconds.toDouble()),
+                  min: 0,
+                  max: dur.inMilliseconds.toDouble(),
+                  onChanged: (v) {
+                    current.controller!.seekTo(Duration(milliseconds: v.round()));
+                  },
+                ),
+              ),
+              Text(_formatDuration(dur), style: const TextStyle(color: Colors.white70)),
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.more_vert),
+                onSelected: (v) async {
+                  if (v == 'subtitle') {
+                    await _pickSubtitle();
+                  } else if (v == 'loop') {
+                    final newLoop = !(current.chewieController?.isLooping ?? false);
+                    current.chewieController?.looping = newLoop;
+                    setState(() {});
+                  }
+                },
+                itemBuilder: (_) => [
+                  const PopupMenuItem(value: 'subtitle', child: Text('Load subtitle file')),
+                  const PopupMenuItem(value: 'loop', child: Text('Toggle loop')),
+                ],
+              )
+            ],
+          )
+        ],
+      ),
+    ),
+  ),
+);
+
+}
+
+String _formatDuration(Duration d) { final two = (int n) => n.toString().padLeft(2, '0'); final h = d.inHours; final m = d.inMinutes.remainder(60); final s = d.inSeconds.remainder(60); if (h > 0) return '${two(h)}:${two(m)}:${two(s)}'; return '${two(m)}:${two(s)}'; }
+
+@override Widget build(BuildContext context) { final controller = current.controller;
+
+return Scaffold(
+  backgroundColor: Colors.black,
+  appBar: AppBar(
+    title: Text(current.title),
+    backgroundColor: Colors.black87,
+  ),
+  body: controller == null
+      ? const Center(child: CircularProgressIndicator())
+      : Stack(
+          children: [
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _onTapScreen,
+              onDoubleTapDown: (details) {
+                _tapPosition = details.globalPosition;
+              },
+              onDoubleTap: () {
+                final screenWidth = MediaQuery.of(context).size.width;
+                if (_tapPosition.dx < screenWidth / 2) _onDoubleTapLeft();
+                else _onDoubleTapRight();
+              },
+              onVerticalDragUpdate: (d) => _onVerticalDragUpdate(d, context),
+              child: Center(
+                child: _subtitleController != null
+                    ? SubtitleWrapper(
+                        videoChild: Chewie(controller: current.chewieController!),
+                        subtitleController: _subtitleController!,
+                      )
+                    : Chewie(controller: current.chewieController!),
+              ),
+            ),
+
+            // simulated brightness & volume indicators
+            Positioned(
+              top: 80,
+              left: 20,
+              child: Column(
+                children: [
+                  const Icon(Icons.brightness_6, color: Colors.white70),
+                  const SizedBox(height: 6),
+                  Container(
+                    width: 80,
+                    height: 8,
+                    decoration: BoxDecoration(borderRadius: BorderRadius.circular(4), color: Colors.white10),
+                    child: FractionallySizedBox(
+                      alignment: Alignment.centerLeft,
+                      widthFactor: _gestureBrightness,
+                      child: Container(decoration: BoxDecoration(color: Colors.yellowAccent, borderRadius: BorderRadius.circular(4))),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text('${(_gestureBrightness * 100).round()}%', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                ],
+              ),
+            ),
+
+            Positioned(
+              top: 80,
+              right: 20,
+              child: Column(
+                children: [
+                  const Icon(Icons.volume_up, color: Colors.white70),
+                  const SizedBox(height: 6),
+                  Container(
+                    width: 80,
+                    height: 8,
+                    decoration: BoxDecoration(borderRadius: BorderRadius.circular(4), color: Colors.white10),
+                    child: FractionallySizedBox(
+                      alignment: Alignment.centerLeft,
+                      widthFactor: _gestureVolume,
+                      child: Container(decoration: BoxDecoration(color: Colors.greenAccent, borderRadius: BorderRadius.circular(4))),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text('${(_gestureVolume * 100).round()}%', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                ],
+              ),
+            ),
+
+            // Skip overlay animation
+            if (_skipText.isNotEmpty)
+              Positioned(
+                left: _tapPosition.dx - 40,
+                top: _tapPosition.dy - 80,
+                child: FadeTransition(
+                  opacity: _animCtrl.drive(CurveTween(curve: Curves.easeOut)),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 10),
+                    decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(8)),
+                    child: Text(_skipText, style: const TextStyle(fontSize: 22, color: Colors.white, fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ),
+
+            // bottom controls
+            _buildControls(context),
+          ],
+        ),
+);
+
+} }
+
+// ========================= // End of file // =========================
